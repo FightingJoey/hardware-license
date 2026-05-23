@@ -67,6 +67,24 @@ type FingerprintConfig struct {
 	RequireGPU bool
 }
 
+// DefaultHostConfig returns paths for tools running directly on the
+// licensed device (bare-metal or host namespace). Use this for
+// on-device `issuer sign -local` and for `hwinfo` defaults.
+func DefaultHostConfig() FingerprintConfig {
+	return FingerprintConfig{
+		DMIDir:          "/sys/class/dmi/id",
+		DeviceTreeDir:   "/proc/device-tree",
+		FirmwareTreeDir: "/sys/firmware/devicetree/base",
+		NetDir:          "/sys/class/net",
+		NICName:         firstEnv("HW_NIC", "eth0"),
+		CmdlinePath:     "/proc/cmdline",
+		BlockDir:        "/sys/class/block",
+		DiskName:        os.Getenv("HW_DISK"),
+		NvidiaSMI:       firstEnv("HW_NVIDIA_SMI", "nvidia-smi"),
+		RequireGPU:      envBool("HW_REQUIRE_GPU"),
+	}
+}
+
 // DefaultLinuxConfig returns the recommended layout for a Linux device
 // where the verifier runs inside a container with /sys bind-mounted
 // read-only at /host/sys. See FingerprintConfig comment for the
@@ -81,9 +99,126 @@ func DefaultLinuxConfig() FingerprintConfig {
 		CmdlinePath:     "/host/cmdline",
 		BlockDir:        "/host/sys/class/block",
 		DiskName:        os.Getenv("HW_DISK"),
-		NvidiaSMI:       "nvidia-smi",
-		RequireGPU:      false,
+		NvidiaSMI:       firstEnv("HW_NVIDIA_SMI", "nvidia-smi"),
+		RequireGPU:      envBool("HW_REQUIRE_GPU"),
 	}
+}
+
+// DefaultFingerprintConfig returns bare-metal host paths. Container bind-mount
+// paths are selected only via -container or HW_CONTAINER=1.
+func DefaultFingerprintConfig() FingerprintConfig {
+	return DefaultHostConfig()
+}
+
+// FingerprintConfigFromEnv resolves the fingerprint layout. When
+// forceContainer is nil, use host paths unless HW_CONTAINER=1. When
+// forceContainer is non-nil, it overrides the env var.
+func FingerprintConfigFromEnv(forceContainer *bool) FingerprintConfig {
+	useContainer := os.Getenv("HW_CONTAINER") == "1"
+	if forceContainer != nil {
+		useContainer = *forceContainer
+	}
+	def := DefaultHostConfig()
+	if useContainer {
+		def = DefaultLinuxConfig()
+	}
+	cfg := FingerprintConfig{
+		DMIDir:          def.DMIDir,
+		DeviceTreeDir:   def.DeviceTreeDir,
+		FirmwareTreeDir: def.FirmwareTreeDir,
+		NetDir:          def.NetDir,
+		NICName:         firstEnv("HW_NIC", def.NICName),
+		CmdlinePath:     def.CmdlinePath,
+		BlockDir:        def.BlockDir,
+		DiskName:        firstEnv("HW_DISK", def.DiskName),
+		NvidiaSMI:       firstEnv("HW_NVIDIA_SMI", def.NvidiaSMI),
+		RequireGPU:      def.RequireGPU,
+	}
+	// Path overrides (HW_DMI, HW_NET, …) are for container deployments
+	// only. Applying them on bare metal silently breaks fingerprint parity
+	// with `issuer sign -local`.
+	if useContainer {
+		cfg.DMIDir = firstEnv("HW_DMI", def.DMIDir)
+		cfg.DeviceTreeDir = firstEnv("HW_DT", def.DeviceTreeDir)
+		cfg.FirmwareTreeDir = firstEnv("HW_FW_TREE", def.FirmwareTreeDir)
+		cfg.NetDir = firstEnv("HW_NET", def.NetDir)
+		cfg.CmdlinePath = firstEnv("HW_CMDLINE", def.CmdlinePath)
+		cfg.BlockDir = firstEnv("HW_BLOCK", def.BlockDir)
+	}
+	if os.Getenv("HW_REQUIRE_GPU") != "" {
+		cfg.RequireGPU = envBool("HW_REQUIRE_GPU")
+	}
+	return cfg
+}
+
+// ApplyFingerprintFlags overlays non-empty CLI flag values onto cfg.
+func ApplyFingerprintFlags(cfg FingerprintConfig, nic, dmi, dt, fw, net, cmdline, block, disk, nvidiaSMI *string, requireGPU *bool) FingerprintConfig {
+	if nic != nil && *nic != "" {
+		cfg.NICName = *nic
+	}
+	if dmi != nil && *dmi != "" {
+		cfg.DMIDir = *dmi
+	}
+	if dt != nil && *dt != "" {
+		cfg.DeviceTreeDir = *dt
+	}
+	if fw != nil && *fw != "" {
+		cfg.FirmwareTreeDir = *fw
+	}
+	if net != nil && *net != "" {
+		cfg.NetDir = *net
+	}
+	if cmdline != nil && *cmdline != "" {
+		cfg.CmdlinePath = *cmdline
+	}
+	if block != nil && *block != "" {
+		cfg.BlockDir = *block
+	}
+	if disk != nil && *disk != "" {
+		cfg.DiskName = *disk
+	}
+	if nvidiaSMI != nil && *nvidiaSMI != "" {
+		cfg.NvidiaSMI = *nvidiaSMI
+	}
+	if requireGPU != nil {
+		cfg.RequireGPU = *requireGPU
+	}
+	return cfg
+}
+
+// RootLockedDMISourceKeys lists DMI identity files that exist but cannot
+// be read by the current user. On Linux these nodes are often mode 0400
+// root:root; signing/verification without elevated privileges silently
+// omits them and produces a different fingerprint.
+func RootLockedDMISourceKeys(cfg FingerprintConfig) []string {
+	checks := map[string]string{
+		"product_uuid":   filepath.Join(cfg.DMIDir, "product_uuid"),
+		"product_serial": filepath.Join(cfg.DMIDir, "product_serial"),
+		"board_serial":   filepath.Join(cfg.DMIDir, "board_serial"),
+	}
+	var locked []string
+	for key, path := range checks {
+		if dmiExistsButUnreadable(path) {
+			locked = append(locked, key)
+		}
+	}
+	sort.Strings(locked)
+	return locked
+}
+
+func dmiExistsButUnreadable(path string) bool {
+	if path == "" {
+		return false
+	}
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return true
+	}
+	f.Close()
+	return false
 }
 
 func firstEnv(name, def string) string {
@@ -91,6 +226,11 @@ func firstEnv(name, def string) string {
 		return v
 	}
 	return def
+}
+
+func envBool(name string) bool {
+	v := os.Getenv(name)
+	return v == "1" || v == "true" || v == "yes"
 }
 
 // CollectSources gathers every available identity source. Sources that

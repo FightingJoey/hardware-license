@@ -6,7 +6,7 @@
 
 ARG GOARCH=arm64
 
-FROM --platform=$BUILDPLATFORM golang:1.21-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
 ARG GOARCH
 WORKDIR /src
 

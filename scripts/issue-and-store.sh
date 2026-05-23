@@ -39,14 +39,24 @@ require_cmd() {
 
 parse_sign_flags() {
   HARDWARE=""
+  HARDWARE_OUT="hardware.json"
+  LOCAL=false
   OUT="license.json"
   local argc=$#
   local -a argv=("$@")
   local i=0
   while (( i < argc )); do
     case "${argv[i]}" in
+      -local)
+        LOCAL=true
+        ((i += 1))
+        ;;
       -hardware)
         HARDWARE="${argv[i+1]:-}"
+        ((i += 2))
+        ;;
+      -hardware-out)
+        HARDWARE_OUT="${argv[i+1]:-}"
         ((i += 2))
         ;;
       -out)
@@ -58,7 +68,11 @@ parse_sign_flags() {
         ;;
     esac
   done
-  [[ -n "$HARDWARE" ]] || die "could not determine -hardware path from arguments"
+  if $LOCAL; then
+    HARDWARE="${HARDWARE_OUT}"
+  else
+    [[ -n "$HARDWARE" ]] || HARDWARE="hardware.json"
+  fi
 }
 
 usage() {
@@ -68,11 +82,16 @@ issue-and-store — sign a license and save it to MySQL
 Usage:
   ./scripts/issue-and-store.sh [issuer sign flags...]
 
-Required issuer flags:
+Required issuer flags (remote signing):
   -hardware PATH     hardware.json from the device
   -priv PATH         Ed25519 private key
   -licensee NAME     customer / licensee name
   -not-after DATE    expiry (YYYY-MM-DD or RFC3339)
+
+On-device signing:
+  -local             collect hardware on this machine and sign in place
+  -nic / -disk-name / -require-gpu   same as hwinfo (see README)
+  -hardware-out PATH snapshot written during -local (default: hardware.json)
 
 Common optional flags:
   -out PATH          output license file (default: license.json)

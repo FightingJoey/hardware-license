@@ -32,6 +32,7 @@ services:
       # ----- hardware fingerprint inputs (must match issuer side) -----
       HW_NIC: enP7s7
       HW_DISK: nvme0n1
+      HW_CONTAINER: "1"
       HW_DMI: /host/sys/class/dmi/id
       HW_DT: /proc/device-tree
       HW_FW_TREE: /host/sys/firmware/devicetree/base
@@ -66,7 +67,7 @@ services:
   # checks from an operator's terminal. It MUST NOT be exposed on any
   # network port; verification is a local CLI affair only.
   verifier:
-    image: yourorg/hw-license:1.0.0
+    image: registry.cn-hangzhou.aliyuncs.com/devqiaoyu/hw-license:1.0.0
     restart: "no"
     profiles: ["debug"]
     network_mode: host
@@ -76,6 +77,7 @@ services:
       LICENSE_WATERMARK: /license/.watermark
       HW_NIC: enP7s7
       HW_DISK: nvme0n1
+      HW_CONTAINER: "1"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: utility
     volumes:

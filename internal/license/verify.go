@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 )
 
@@ -79,9 +80,13 @@ func Verify(opts VerifyOptions) VerifyResult {
 		return emit(ReasonHardwareUnavailable, err, lic.ID, "", time.Time{})
 	}
 	if info.Fingerprint != lic.HardwareFingerprint {
-		return emit(ReasonFingerprintMismatch,
-			fmt.Errorf("device fp %s != license fp %s", info.Fingerprint, lic.HardwareFingerprint),
-			lic.ID, info.Fingerprint, time.Time{})
+		err := fmt.Errorf("device fp %s != license fp %s", info.Fingerprint, lic.HardwareFingerprint)
+		if os.Geteuid() != 0 {
+			if locked := RootLockedDMISourceKeys(opts.Fingerprint); len(locked) > 0 {
+				err = fmt.Errorf("%w; unreadable root-only DMI fields %v (retry with sudo)", err, locked)
+			}
+		}
+		return emit(ReasonFingerprintMismatch, err, lic.ID, info.Fingerprint, time.Time{})
 	}
 
 	// 4. Derive keys.
@@ -169,7 +174,7 @@ func Verify(opts VerifyOptions) VerifyResult {
 
 	// 9. Success — persist updated watermark, build the public result.
 	if err := SaveWatermark(opts.WatermarkPath, hmacKey, next); err != nil {
-		return emit(ReasonWatermarkTampered, fmt.Errorf("save watermark: %w", err),
+		return emit(ReasonMalformed, fmt.Errorf("save watermark: %w", err),
 			lic.ID, info.Fingerprint, effective)
 	}
 

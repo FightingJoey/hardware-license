@@ -1,18 +1,20 @@
-// Command issuer is the offline-license signing tool. It MUST run
-// only on a trusted internal-network host. The private key it touches
-// is the root of trust for the entire deployment; never copy it to a
-// licensed device, a CI runner, or a developer laptop without a clear
-// reason.
+// Command issuer signs offline licenses. It can run in two modes:
+//
+//   - Remote signing (default): read a customer-supplied hardware.json
+//     on an internal-network host and write license.json.
+//   - On-device signing (-local): collect hardware on the licensed
+//     device and sign in place, so hardware.json no longer has to be
+//     exported first.
 //
 // Usage:
 //
 //	issuer keygen   -priv private.pem -pub public.pem
 //	issuer sign     -hardware hardware.json -priv private.pem \
-//	                -licensee "ACME Corp" \
-//	                -not-after 2027-05-21 \
-//	                -features pro,ai-camera \
-//	                -max-offline-days 90 \
-//	                -out license.json
+//	                -licensee "ACME Corp" -not-after 2027-05-21 -out license.json
+//	issuer sign     -local -priv private.pem \
+//	                -licensee "ACME Corp" -not-after 2027-05-21 \
+//	                -nic enP7s7 -disk-name nvme0n1 -require-gpu \
+//	                -out /license/license.json
 //	issuer inspect  -license license.json [-pub public.pem] [-hardware hardware.json]
 package main
 
@@ -53,7 +55,7 @@ func usage() {
 
 Subcommands:
   keygen    Generate an Ed25519 keypair (PKCS#8 / PKIX PEM).
-  sign      Produce a license.json from a hardware.json.
+  sign      Produce license.json from hardware.json or from local hardware (-local).
   inspect   Pretty-print a license; if a public key is given,
             re-verify the signature. If a hardware.json is given,
             re-decrypt the payload.
@@ -91,7 +93,10 @@ func cmdKeygen(argv []string) {
 
 func cmdSign(argv []string) {
 	fs := flag.NewFlagSet("sign", flag.ExitOnError)
-	hwPath := fs.String("hardware", "hardware.json", "hardware.json from the device")
+	local := fs.Bool("local", false, "collect hardware on this machine instead of reading -hardware")
+	container := fs.Bool("container", false, "with -local, use container bind-mount paths (/host/sys/...)")
+	hwPath := fs.String("hardware", "hardware.json", "hardware.json from the device (ignored with -local)")
+	hwOut := fs.String("hardware-out", "hardware.json", "with -local, write the collected hardware snapshot here")
 	privPath := fs.String("priv", "private.pem", "Ed25519 private key (PKCS#8 PEM)")
 	out := fs.String("out", "license.json", "output license file")
 	licensee := fs.String("licensee", "", "human-readable customer/licensee name (required)")
@@ -101,6 +106,18 @@ func cmdSign(argv []string) {
 	maxOffline := fs.Int("max-offline-days", 0, "0 = unlimited; >0 = device must re-verify against fresh wall-clock within N days of LastSeenAt")
 	note := fs.String("note", "", "free-form note stored inside the encrypted payload")
 	force := fs.Bool("force", false, "overwrite existing license file")
+
+	nic := fs.String("nic", "", "host NIC name whose MAC participates in the fingerprint")
+	dmiDir := fs.String("dmi", "", "DMI/SMBIOS directory")
+	dtDir := fs.String("device-tree", "", "ARM device-tree directory")
+	fwTreeDir := fs.String("firmware-tree", "", "device-tree sysfs fallback")
+	netDir := fs.String("net", "", "NIC directory root")
+	cmdlinePath := fs.String("cmdline", "", "kernel cmdline file")
+	blockDir := fs.String("block-dir", "", "block-device sysfs root")
+	diskName := fs.String("disk-name", "", "pinned block device (e.g. nvme0n1)")
+	nvidiaSMI := fs.String("nvidia-smi", "", "nvidia-smi binary (empty to skip)")
+	requireGPU := fs.Bool("require-gpu", false, "fail if GPU UUID is unavailable")
+
 	_ = fs.Parse(argv)
 
 	if *licensee == "" {
@@ -115,10 +132,42 @@ func cmdSign(argv []string) {
 		}
 	}
 
-	hw, err := loadHardware(*hwPath)
-	if err != nil {
-		fail("sign: %v", err)
+	var hw *license.HardwareInfo
+	var err error
+	if *local {
+		var forceContainer *bool
+		if *container {
+			t := true
+			forceContainer = &t
+		}
+		cfg := license.FingerprintConfigFromEnv(forceContainer)
+		explicit := visitedFlags(fs)
+		var reqGPU *bool
+		if explicit["require-gpu"] {
+			reqGPU = requireGPU
+		}
+		cfg = license.ApplyFingerprintFlags(cfg, nic, dmiDir, dtDir, fwTreeDir, netDir, cmdlinePath, blockDir, diskName, nvidiaSMI, reqGPU)
+		hw, err = license.CollectHardwareInfo(cfg)
+		if err != nil {
+			fail("sign: collect local hardware: %v", err)
+		}
+		if *hwOut != "" && *hwOut != "-" {
+			if !*force {
+				if _, err := os.Stat(*hwOut); err == nil {
+					fail("%s already exists; pass -force to overwrite", *hwOut)
+				}
+			}
+			if err := license.WriteJSONFileAtomic(*hwOut, hw, 0o644); err != nil {
+				fail("sign: write hardware snapshot: %v", err)
+			}
+		}
+	} else {
+		hw, err = loadHardware(*hwPath)
+		if err != nil {
+			fail("sign: %v", err)
+		}
 	}
+
 	priv, err := license.LoadEd25519Private(*privPath)
 	if err != nil {
 		fail("sign: %v", err)
@@ -135,7 +184,6 @@ func cmdSign(argv []string) {
 	if naTime.IsZero() {
 		fail("sign: -not-after must be set")
 	}
-	// Bare dates resolve to 23:59:59 local-end-of-day for usability.
 	if isBareDate(*notAfter) {
 		naTime = endOfDayUTC(naTime)
 	}
@@ -169,6 +217,12 @@ func cmdSign(argv []string) {
 	}
 	fmt.Printf("license written:\n  path:     %s\n  id:       %s\n  not-after: %s\n  features: %v\n",
 		*out, lic.ID, lic.NotAfter.Format(time.RFC3339), feats)
+	if *local {
+		fmt.Printf("  fingerprint: %s\n", hw.Fingerprint)
+		if *hwOut != "" && *hwOut != "-" {
+			fmt.Printf("  hardware: %s\n", *hwOut)
+		}
+	}
 }
 
 // ---- inspect ---------------------------------------------------------------
@@ -270,7 +324,27 @@ func endOfDayUTC(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.UTC)
 }
 
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func envBool(key string) bool {
+	v := os.Getenv(key)
+	return v == "1" || v == "true" || v == "yes"
+}
+
 func fail(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "issuer: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+func visitedFlags(fs *flag.FlagSet) map[string]bool {
+	m := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) {
+		m[f.Name] = true
+	})
+	return m
 }

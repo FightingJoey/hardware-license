@@ -37,7 +37,8 @@ func ReadJSONFileStrict(path string, v any) error {
 
 // WriteJSONFileAtomic writes pretty-printed JSON to disk via a temp
 // file + rename so partial writes can never leave a half-baked file.
-// Mode is applied to the final file.
+// Mode is applied to the final file. Parent directories are created
+// as needed.
 func WriteJSONFileAtomic(path string, v any, mode os.FileMode) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -45,6 +46,11 @@ func WriteJSONFileAtomic(path string, v any, mode os.FileMode) error {
 	}
 	data = append(data, '\n')
 	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", dir, err)
+		}
+	}
 	tmp, err := os.CreateTemp(dir, ".license.*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
@@ -73,4 +79,14 @@ func WriteJSONFileAtomic(path string, v any, mode os.FileMode) error {
 		return fmt.Errorf("rename: %w", err)
 	}
 	return nil
+}
+
+// DefaultWatermarkPath returns the conventional watermark location beside
+// a license file: same directory, basename ".watermark".
+func DefaultWatermarkPath(licensePath string) string {
+	dir := filepath.Dir(licensePath)
+	if dir == "" || dir == "." {
+		return ".watermark"
+	}
+	return filepath.Join(dir, ".watermark")
 }

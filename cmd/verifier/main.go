@@ -22,28 +22,58 @@ import (
 )
 
 func main() {
-	var (
-		licPath       = flag.String("license", envOr("LICENSE_PATH", "/license/license.json"), "path to license.json")
-		pubPath       = flag.String("pub", envOr("LICENSE_PUBLIC_KEY", "/license/public.pem"), "path to Ed25519 public key (PEM)")
-		watermarkPath = flag.String("watermark", envOr("LICENSE_WATERMARK", "/license/.watermark"), "path to the watermark file")
-		nic           = flag.String("nic", envOr("HW_NIC", "eth0"), "host NIC name")
-		dmiDir        = flag.String("dmi", envOr("HW_DMI", "/host/sys/class/dmi/id"), "DMI directory (host bind-mount)")
-		dtDir         = flag.String("device-tree", envOr("HW_DT", "/proc/device-tree"), "ARM device-tree directory (preferred)")
-		fwTreeDir     = flag.String("firmware-tree", envOr("HW_FW_TREE", "/host/sys/firmware/devicetree/base"), "device-tree sysfs fallback")
-		netDir        = flag.String("net", envOr("HW_NET", "/host/sys/class/net"), "NIC directory root")
-		cmdlinePath   = flag.String("cmdline", envOr("HW_CMDLINE", "/host/cmdline"), "kernel cmdline file")
-		blockDir      = flag.String("block-dir", envOr("HW_BLOCK", "/host/sys/class/block"), "block-device sysfs root")
-		diskName      = flag.String("disk-name", envOr("HW_DISK", ""), "pinned block device (e.g. nvme0n1); empty = auto-pick")
-		nvidiaSMI     = flag.String("nvidia-smi", envOr("HW_NVIDIA_SMI", "nvidia-smi"), "nvidia-smi binary (empty to skip)")
-		requireGPU    = flag.Bool("require-gpu", envBool("HW_REQUIRE_GPU"), "fail if GPU UUID is unavailable")
-		jsonOut       = flag.Bool("json", false, "emit a JSON result to stdout (default: human-readable)")
-		verbose       = flag.Bool("v", false, "verbose: log internal diagnostics to stderr")
-	)
+	licPath := flag.String("license", envOr("LICENSE_PATH", "/license/license.json"), "path to license.json")
+	pubPath := flag.String("pub", envOr("LICENSE_PUBLIC_KEY", "/license/public.pem"), "path to Ed25519 public key (PEM)")
+	watermarkPath := flag.String("watermark", envOr("LICENSE_WATERMARK", ""), "path to watermark file (default: .watermark beside -license)")
+	container := flag.Bool("container", false, "force container bind-mount paths (/host/sys/...)")
+	hostPaths := flag.Bool("host", false, "force bare-metal host paths (/sys/...)")
+	nic := flag.String("nic", "", "host NIC name")
+	dmiDir := flag.String("dmi", "", "DMI directory")
+	dtDir := flag.String("device-tree", "", "ARM device-tree directory")
+	fwTreeDir := flag.String("firmware-tree", "", "device-tree sysfs fallback")
+	netDir := flag.String("net", "", "NIC directory root")
+	cmdlinePath := flag.String("cmdline", "", "kernel cmdline file")
+	blockDir := flag.String("block-dir", "", "block-device sysfs root")
+	diskName := flag.String("disk-name", "", "pinned block device (e.g. nvme0n1)")
+	nvidiaSMI := flag.String("nvidia-smi", "", "nvidia-smi binary (empty to skip)")
+	requireGPU := flag.Bool("require-gpu", false, "fail if GPU UUID is unavailable")
+	jsonOut := flag.Bool("json", false, "emit a JSON result to stdout (default: human-readable)")
+	verbose := flag.Bool("v", false, "verbose: log internal diagnostics to stderr")
 	flag.Parse()
+
+	wmPath := *watermarkPath
+	if wmPath == "" {
+		wmPath = license.DefaultWatermarkPath(*licPath)
+	}
 
 	pub, err := license.LoadEd25519Public(*pubPath)
 	if err != nil {
 		fatalf("read public key: %v", err)
+	}
+
+	var forceContainer *bool
+	switch {
+	case *container && *hostPaths:
+		fatalf("use either -container or -host, not both")
+	case *container:
+		t := true
+		forceContainer = &t
+	case *hostPaths:
+		f := false
+		forceContainer = &f
+	}
+
+	fpCfg := license.FingerprintConfigFromEnv(forceContainer)
+	explicit := visitedFlags()
+	var reqGPU *bool
+	if explicit["require-gpu"] {
+		reqGPU = requireGPU
+	}
+	fpCfg = license.ApplyFingerprintFlags(fpCfg, nic, dmiDir, dtDir, fwTreeDir, netDir, cmdlinePath, blockDir, diskName, nvidiaSMI, reqGPU)
+
+	if *verbose {
+		fmt.Fprintf(os.Stderr, "[verify] fingerprint paths: dmi=%s net=%s block=%s cmdline=%s fw=%s nic=%s disk=%s\n",
+			fpCfg.DMIDir, fpCfg.NetDir, fpCfg.BlockDir, fpCfg.CmdlinePath, fpCfg.FirmwareTreeDir, fpCfg.NICName, fpCfg.DiskName)
 	}
 
 	var logger func(license.VerifyEvent)
@@ -62,20 +92,9 @@ func main() {
 	res := license.Verify(license.VerifyOptions{
 		LicensePath:   *licPath,
 		PublicKey:     pub,
-		WatermarkPath: *watermarkPath,
-		Fingerprint: license.FingerprintConfig{
-			DMIDir:          *dmiDir,
-			DeviceTreeDir:   *dtDir,
-			FirmwareTreeDir: *fwTreeDir,
-			NetDir:          *netDir,
-			NICName:         *nic,
-			CmdlinePath:     *cmdlinePath,
-			BlockDir:        *blockDir,
-			DiskName:        *diskName,
-			NvidiaSMI:       *nvidiaSMI,
-			RequireGPU:      *requireGPU,
-		},
-		Logger: logger,
+		WatermarkPath: wmPath,
+		Fingerprint:   fpCfg,
+		Logger:        logger,
 	})
 
 	if *jsonOut {
@@ -105,16 +124,19 @@ func main() {
 	}
 }
 
+func visitedFlags() map[string]bool {
+	m := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) {
+		m[f.Name] = true
+	})
+	return m
+}
+
 func envOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
 	}
 	return def
-}
-
-func envBool(k string) bool {
-	v := os.Getenv(k)
-	return v == "1" || v == "true" || v == "yes"
 }
 
 func fatalf(format string, args ...any) {

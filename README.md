@@ -4,7 +4,7 @@
 
 | 组件 | 部署位置 | 携带密钥 | 用途 |
 |------|----------|----------|------|
-| `issuer`（Go CLI） | **仅内网签发主机** | `private.pem` | 根据客户的 `hardware.json` 生成 `license.json` |
+| `issuer`（Go CLI） | 内网主机 **或** 被授权设备 | `private.pem`（签发时） | 生成 `license.json`；支持读取 `hardware.json` 或在设备上 `-local` 采集后签发 |
 | `licensedb`（Go CLI） | **仅内网签发主机** | 无 | 将已签发的 License 元数据写入远端 MySQL |
 | `issue-and-store.sh` | **仅内网签发主机** | 无 | 封装 `issuer sign` + `licensedb store` 的一键签发入库脚本 |
 | `hwinfo`（Go CLI） | 被授权设备 | 无 | 读取 `/sys`/`/proc`，输出 `hardware.json` 供签发 |
@@ -34,7 +34,8 @@ make test         # 6 项跨语言测试（Go 签发 → Node 验证）
 
 | 文件 | 目标平台 | 说明 |
 |------|----------|------|
-| `build/issuer` | 宿主机原生 | 签发主机使用（macOS / Linux / Windows 均可） |
+| `build/issuer` | 宿主机原生 | 内网签发主机使用（macOS / Linux / Windows 均可） |
+| `build/issuer-device` | **linux/arm64**（默认） | 被授权设备上本地签发（`issuer sign -local`） |
 | `build/licensedb` | 宿主机原生 | 签发后将 License 记录写入远端 MySQL |
 | `build/hwinfo` | **linux/arm64**（默认） | 部署到 GB10 设备 |
 | `build/verifier` | **linux/arm64**（默认） | 部署到 GB10 设备 |
@@ -84,13 +85,17 @@ sudo ./build/hwinfo \
   -out hardware.json
 ```
 
+> GB10 等 Linux 设备上，`/sys/class/dmi/id/product_uuid` 等 DMI 节点通常仅 **root 可读**。`hwinfo`、`issuer sign -local`、`verifier` 在宿主机上运行时请使用 `sudo`，否则指纹会缺少 DMI 字段，与 sudo 签发的 license 不一致。
+
+> 宿主机上跑 `verifier` 时，请勿 export `HW_DMI=/host/sys/...` 等容器路径环境变量（那是 `docker-compose.yml` 给容器用的）。新版 CLI 在 bare-metal 模式下会忽略它们；也可显式加 `-host`。
+
 容器内等价命令见 `docs/hardware-fingerprint.md`。
 
 输出 JSON 包含所有可用的身份源（DMI 厂商/型号、device-tree、网卡 MAC、root UUID、**NVMe 工厂 serial / WWID**、GPU UUID）及其 SHA-256 指纹。该文件不含任何密钥，可安全通过 U 盘或邮件传输。详见 [docs/hardware-fingerprint.md](docs/hardware-fingerprint.md)。
 
 ### 3. 内网签发 License
 
-在内网主机上：
+在内网主机上（读取设备传来的 `hardware.json`）：
 
 ```bash
 ./build/issuer sign \
@@ -102,6 +107,32 @@ sudo ./build/hwinfo \
   -max-offline-days 90 \
   -out license.json
 ```
+
+#### 在被授权设备上本地签发（`-local`）
+
+若私钥允许临时部署到设备（或通过 SSH 在 GB10 上执行），可跳过「导出 hardware.json → 内网签发 → 回传 license.json」步骤，由 `issuer` 在设备上**实时采集硬件**并直接写出 `license.json`。采集参数与 `hwinfo` / `verifier` 一致，指纹与验证器运行时完全对齐。
+
+```bash
+# 在 macOS 开发机上交叉编译设备端 issuer
+make issuer-device
+
+# 拷贝到 GB10 后，在宿主机上执行（按实际网卡/磁盘替换；需要 sudo 读取 DMI）
+sudo ./build/issuer-device sign -local \
+  -priv ./private.pem \
+  -licensee "ACME Corp" \
+  -not-after 2027-05-21 \
+  -features pro,ai-camera \
+  -max-offline-days 90 \
+  -nic enP7s7 \
+  -disk-name nvme0n1 \
+  -require-gpu \
+  -out ./license/license.json \
+  -hardware-out ./license/hardware.json
+```
+
+`-local` 会默认再写一份 `hardware.json` 快照（可用 `-hardware-out` 改路径，`-` 表示不写）。在容器内签发时加 `-container`，使用 `/host/sys/...` 挂载路径（与 `docker-compose.yml` 一致）。
+
+> **安全提示**：设备端签发意味着 `private.pem` 会出现在被授权设备上，仅在可控运维场景使用。常规部署仍推荐私钥只保留在内网主机。
 
 `-not-after` 为必填项。`-max-offline-days 0`（默认）表示不启用离线时长限制；设为大于 0 的值时，设备必须在指定天数内完成一次有效验证，否则即使 `notAfter` 尚未到期，水位机制也会判定 License 失效。详见 [docs/max-offline-days.md](docs/max-offline-days.md)。
 
@@ -148,7 +179,17 @@ docker compose up -d app
 docker compose run --rm verifier -v
 ```
 
-或在宿主机直接运行 `./build/verifier -v`。
+或在宿主机直接运行（与 `issuer sign -local` 相同，**需要 sudo** 以读取 DMI 字段；watermark 默认写在 license 同目录的 `.watermark`）：
+
+```bash
+sudo ./build/verifier -v \
+  -pub ./public.pem \
+  -license ./license.json \
+  -nic enP7s7 \
+  -disk-name nvme0n1 \
+  -require-gpu
+# 等价于 -watermark ./.watermark
+```
 
 ---
 
@@ -234,7 +275,7 @@ docker compose run --rm verifier -v
 hardware-license/
 ├── cmd/
 │   ├── hwinfo/     # 设备端硬件采集（无密钥）
-│   ├── issuer/     # 内网签发（含 private.pem）
+│   ├── issuer/     # 签发（内网读 hardware.json，或设备端 -local）
 │   ├── licensedb/  # 签发台账写入远端 MySQL
 │   └── verifier/   # 设备端验证 CLI（运维/调试）
 ├── scripts/
