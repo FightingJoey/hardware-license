@@ -1,0 +1,19 @@
+# Build artifacts
+/build/
+verifier-node/dist/
+verifier-node/node_modules/
+
+# Local key material — NEVER commit private keys.
+*.pem
+!**/testdata/*.pem
+
+# Generated license artifacts
+hardware.json
+license.json
+.watermark
+/license/
+
+# Editor / OS noise
+.DS_Store
+*.swp
+/docs/session-*.md

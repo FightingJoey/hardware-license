@@ -1,0 +1,94 @@
+# Reference deployment for a GB10 device. Two services share one
+# license/ directory and the same host-identity bind mounts so that the
+# fingerprint computed by the verifier exactly matches what hwinfo saw
+# when the operator produced hardware.json.
+#
+# IMPORTANT bind-mount notes
+# --------------------------
+# sysfs uses internal symlinks (e.g. /sys/class/net/eth0 ->
+# ../../devices/...). Bind-mounting individual /sys subdirectories
+# breaks those symlinks because the symlink targets point at
+# /sys/devices/... which is NOT visible inside the container. The only
+# reliable layout is to bind-mount the whole /sys read-only and let the
+# kernel resolve symlinks normally.
+#
+# Edit HW_NIC and HW_DISK to whatever your host reports — on GB10 they
+# are typically `enP7s7` and `nvme0n1` respectively. The verifier
+# refuses to fall back to a different NIC; that is a feature.
+
+services:
+  # The Next.js application that needs licensing. Its container also
+  # carries the @yourorg/license-verifier package and is the ONLY
+  # process that decides "valid / invalid". The standalone verifier
+  # below is for operations and debugging.
+  app:
+    image: yourorg/nextjs-app:1.0.0
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      LICENSE_PATH: /license/license.json
+      LICENSE_PUBLIC_KEY: /license/public.pem
+      LICENSE_WATERMARK: /license/.watermark
+      # ----- hardware fingerprint inputs (must match issuer side) -----
+      HW_NIC: enP7s7
+      HW_DISK: nvme0n1
+      HW_DMI: /host/sys/class/dmi/id
+      HW_DT: /proc/device-tree
+      HW_FW_TREE: /host/sys/firmware/devicetree/base
+      HW_NET: /host/sys/class/net
+      HW_BLOCK: /host/sys/class/block
+      HW_CMDLINE: /host/cmdline
+      HW_NVIDIA_SMI: nvidia-smi
+      # nvidia-container-toolkit injection knobs. `utility` is the
+      # capability that brings `nvidia-smi` and libnvidia-ml.so into
+      # the container, which is exactly what hwinfo / verifier need.
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: utility
+    volumes:
+      - ./license:/license
+      # Whole-tree sysfs mount. Read-only; the kernel keeps it that way
+      # for processes inside the container regardless of the :ro flag.
+      - /sys:/host/sys:ro
+      - /proc/cmdline:/host/cmdline:ro
+      # Fallback path for GPU UUID when nvidia-smi is unavailable. Safe
+      # to mount unconditionally — it's a read-only kernel-driver proc.
+      - /proc/driver/nvidia:/proc/driver/nvidia:ro
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, utility]
+
+  # Stand-alone verifier — useful for `docker compose run` style health
+  # checks from an operator's terminal. It MUST NOT be exposed on any
+  # network port; verification is a local CLI affair only.
+  verifier:
+    image: yourorg/hw-license:1.0.0
+    restart: "no"
+    profiles: ["debug"]
+    network_mode: host
+    environment:
+      LICENSE_PATH: /license/license.json
+      LICENSE_PUBLIC_KEY: /license/public.pem
+      LICENSE_WATERMARK: /license/.watermark
+      HW_NIC: enP7s7
+      HW_DISK: nvme0n1
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: utility
+    volumes:
+      - ./license:/license
+      - /sys:/host/sys:ro
+      - /proc/cmdline:/host/cmdline:ro
+      - /proc/driver/nvidia:/proc/driver/nvidia:ro
+    command: ["-v"]
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, utility]

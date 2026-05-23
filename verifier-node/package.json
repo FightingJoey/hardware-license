@@ -1,0 +1,25 @@
+{
+  "name": "@yourorg/license-verifier",
+  "version": "1.0.0",
+  "private": true,
+  "description": "In-process verifier for the v3 offline license format (Ed25519 + AES-256-GCM + HKDF).",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
+}
