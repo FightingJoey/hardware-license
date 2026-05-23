@@ -177,7 +177,7 @@ sudo ./build/hwinfo \
 docker run --rm \
   -v /sys:/host/sys:ro \
   -v /proc/cmdline:/host/cmdline:ro \
-  -v /proc/driver/nvidia:/proc/driver/nvidia:ro \
+  -v /proc/driver/nvidia:/host/nvidia-driver:ro \
   --runtime=nvidia \
   -e NVIDIA_VISIBLE_DEVICES=all \
   -e NVIDIA_DRIVER_CAPABILITIES=utility \
@@ -235,7 +235,7 @@ docker run --rm \
 ### 7.4 为什么 GPU 走双通道
 
 - **优先 `nvidia-smi`**：兼容性最好，nvidia-container-runtime 暴露的就是这个命令
-- **回退 `/proc/driver/nvidia`**：裸机或者某些精简容器中没有 `nvidia-smi`，但内核驱动节点还在
+- **回退 nvidia proc 节点**：裸机读 `/proc/driver/nvidia`；容器内 bind-mount 到 `/host/nvidia-driver`（不可挂到容器 `/proc` 下）
 
 两种渠道返回的 UUID 格式（`GPU-<uuid>`）一致，可以混用。
 

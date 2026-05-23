@@ -40,6 +40,8 @@ services:
       HW_BLOCK: /host/sys/class/block
       HW_CMDLINE: /host/cmdline
       HW_NVIDIA_SMI: nvidia-smi
+      HW_NVIDIA_PROC: /host/nvidia-driver
+      HW_REQUIRE_GPU: "1"
       # nvidia-container-toolkit injection knobs. `utility` is the
       # capability that brings `nvidia-smi` and libnvidia-ml.so into
       # the container, which is exactly what hwinfo / verifier need.
@@ -51,9 +53,8 @@ services:
       # for processes inside the container regardless of the :ro flag.
       - /sys:/host/sys:ro
       - /proc/cmdline:/host/cmdline:ro
-      # Fallback path for GPU UUID when nvidia-smi is unavailable. Safe
-      # to mount unconditionally — it's a read-only kernel-driver proc.
-      - /proc/driver/nvidia:/proc/driver/nvidia:ro
+      # Bind outside /proc — modern Docker/runc rejects mounts under /proc.
+      - /proc/driver/nvidia:/host/nvidia-driver:ro
     runtime: nvidia
     deploy:
       resources:
@@ -78,13 +79,15 @@ services:
       HW_NIC: enP7s7
       HW_DISK: nvme0n1
       HW_CONTAINER: "1"
+      HW_NVIDIA_PROC: /host/nvidia-driver
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: utility
+      HW_REQUIRE_GPU: "1"
     volumes:
       - ./license:/license
       - /sys:/host/sys:ro
       - /proc/cmdline:/host/cmdline:ro
-      - /proc/driver/nvidia:/proc/driver/nvidia:ro
+      - /proc/driver/nvidia:/host/nvidia-driver:ro
     command: ["-v"]
     runtime: nvidia
     deploy:

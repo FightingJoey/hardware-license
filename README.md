@@ -171,7 +171,7 @@ export DB_NAME=hardware_license   # 可选，默认 hardware_license
 docker compose up -d app
 ```
 
-`docker-compose.yml` 已将宿主机 `/sys` **整树**以只读方式挂载到 `/host/sys`（sysfs 内部的 symlink 要求整树挂载才能正确解析），同时挂载 `/proc/cmdline` 与 `/proc/driver/nvidia`。Next.js 进程在启动时及之后每小时调用验证库；验证失败时以退出码 `78` 退出，由 Docker 决定是否重启。
+`docker-compose.yml` 已将宿主机 `/sys` **整树**以只读方式挂载到 `/host/sys`（sysfs 内部的 symlink 要求整树挂载才能正确解析），同时挂载 `/proc/cmdline` 与 `/proc/driver/nvidia` → 容器内 `/host/nvidia-driver`（**不能**挂到容器 `/proc` 下，新版 Docker/runc 会拒绝）。
 
 ### 5. 运维侧快速校验
 
@@ -357,7 +357,7 @@ sudo ./build/hwinfo \
 docker run --rm \
   -v /sys:/host/sys:ro \
   -v /proc/cmdline:/host/cmdline:ro \
-  -v /proc/driver/nvidia:/proc/driver/nvidia:ro \
+  -v /proc/driver/nvidia:/host/nvidia-driver:ro \
   --runtime=nvidia \
   -e NVIDIA_VISIBLE_DEVICES=all \
   -e NVIDIA_DRIVER_CAPABILITIES=utility \

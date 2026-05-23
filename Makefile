@@ -66,7 +66,7 @@ test: node-test
 
 # --- Docker -----------------------------------------------------------------
 
-IMAGE ?= yourorg/hw-license:1.0.0
+IMAGE ?= devqiaoyu/hw-license:1.0.0
 
 docker:
 	docker buildx build --platform $(TARGET_OS)/$(TARGET_ARCH) \

@@ -24,7 +24,7 @@ import (
 //	volumes:
 //	  - /sys:/host/sys:ro
 //	  - /proc/cmdline:/host/cmdline:ro
-//	  - /proc/driver/nvidia:/proc/driver/nvidia:ro
+//	  - /proc/driver/nvidia:/host/nvidia-driver:ro   # NOT under /proc in-container
 //
 // Mounting the entire /sys (read-only) is required because sysfs uses
 // internal symlinks (e.g. /sys/class/net/eth0 -> ../../devices/...)
@@ -60,8 +60,13 @@ type FingerprintConfig struct {
 	// namespace, falling back to the first eMMC.
 	DiskName string
 	// NvidiaSMI is the path to nvidia-smi if available. Optional; the
-	// GPU UUID source falls back to /proc/driver/nvidia parsing.
+	// GPU UUID source falls back to NvidiaProcDir parsing.
 	NvidiaSMI string
+	// NvidiaProcDir is the root of the host nvidia driver's proc nodes.
+	// Bare metal: /proc/driver/nvidia. In containers bind-mount the
+	// host tree elsewhere (e.g. /host/nvidia-driver) — Docker forbids
+	// bind mounts directly under the container's /proc.
+	NvidiaProcDir string
 	// RequireGPU forces failure when GPU UUID is unreadable. Set true
 	// on devices that are supposed to have an NVIDIA GPU (like GB10).
 	RequireGPU bool
@@ -81,6 +86,7 @@ func DefaultHostConfig() FingerprintConfig {
 		BlockDir:        "/sys/class/block",
 		DiskName:        os.Getenv("HW_DISK"),
 		NvidiaSMI:       firstEnv("HW_NVIDIA_SMI", "nvidia-smi"),
+		NvidiaProcDir:   firstEnv("HW_NVIDIA_PROC", "/proc/driver/nvidia"),
 		RequireGPU:      envBool("HW_REQUIRE_GPU"),
 	}
 }
@@ -100,6 +106,7 @@ func DefaultLinuxConfig() FingerprintConfig {
 		BlockDir:        "/host/sys/class/block",
 		DiskName:        os.Getenv("HW_DISK"),
 		NvidiaSMI:       firstEnv("HW_NVIDIA_SMI", "nvidia-smi"),
+		NvidiaProcDir:   firstEnv("HW_NVIDIA_PROC", "/host/nvidia-driver"),
 		RequireGPU:      envBool("HW_REQUIRE_GPU"),
 	}
 }
@@ -132,6 +139,7 @@ func FingerprintConfigFromEnv(forceContainer *bool) FingerprintConfig {
 		BlockDir:        def.BlockDir,
 		DiskName:        firstEnv("HW_DISK", def.DiskName),
 		NvidiaSMI:       firstEnv("HW_NVIDIA_SMI", def.NvidiaSMI),
+		NvidiaProcDir:   firstEnv("HW_NVIDIA_PROC", def.NvidiaProcDir),
 		RequireGPU:      def.RequireGPU,
 	}
 	// Path overrides (HW_DMI, HW_NET, …) are for container deployments
@@ -469,8 +477,13 @@ func queryGPUUUID(cfg FingerprintConfig) string {
 			}
 		}
 	}
-	// Fallback: /proc/driver/nvidia/gpus/*/information contains a GPU UUID line.
-	matches, _ := filepath.Glob("/proc/driver/nvidia/gpus/*/information")
+	// Fallback: host nvidia driver proc nodes (bind-mounted outside /proc
+	// in containers — see NvidiaProcDir).
+	procRoot := cfg.NvidiaProcDir
+	if procRoot == "" {
+		procRoot = "/proc/driver/nvidia"
+	}
+	matches, _ := filepath.Glob(filepath.Join(procRoot, "gpus", "*", "information"))
 	for _, p := range matches {
 		data := readTrimmed(p)
 		for _, line := range strings.Split(data, "\n") {

@@ -28,6 +28,8 @@ export interface FingerprintConfig {
   diskName?: string;
   /** nvidia-smi binary or empty to skip. */
   nvidiaSmi?: string;
+  /** Host nvidia driver proc root (container: /host/nvidia-driver). */
+  nvidiaProcDir?: string;
   /** Fail if GPU UUID is unavailable. */
   requireGpu?: boolean;
 }
@@ -43,6 +45,7 @@ export function defaultLinuxConfig(): FingerprintConfig {
     blockDir: '/host/sys/class/block',
     diskName: process.env.HW_DISK ?? '',
     nvidiaSmi: process.env.HW_NVIDIA_SMI ?? 'nvidia-smi',
+    nvidiaProcDir: process.env.HW_NVIDIA_PROC ?? '/host/nvidia-driver',
     requireGpu: false,
   };
 }
@@ -232,7 +235,7 @@ function queryGpuUuid(cfg: FingerprintConfig): string {
     }
   }
   try {
-    const dir = '/proc/driver/nvidia/gpus';
+    const dir = path.join(cfg.nvidiaProcDir ?? '/proc/driver/nvidia', 'gpus');
     for (const entry of readdirSync(dir)) {
       const info = readTrimmed(path.join(dir, entry, 'information'));
       for (const line of info.split('\n')) {
