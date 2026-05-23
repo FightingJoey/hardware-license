@@ -1,4 +1,4 @@
-.PHONY: all go-build issuer hwinfo verifier device-build node-build node-test test clean deps docker
+.PHONY: all go-build issuer licensedb hwinfo verifier device-build node-build node-test test clean deps docker
 
 GO     := go
 NODE   := node
@@ -22,6 +22,10 @@ issuer:
 	@mkdir -p $(BUILD)
 	$(GO) build -trimpath -ldflags="-s -w" -o $(BUILD)/issuer ./cmd/issuer
 
+licensedb:
+	@mkdir -p $(BUILD)
+	$(GO) build -trimpath -ldflags="-s -w" -o $(BUILD)/licensedb ./cmd/licensedb
+
 # `hwinfo` and `verifier` run on the licensed device, always Linux. We
 # cross-compile so that running `make` on a macOS developer machine
 # still produces ELF binaries you can scp directly to the device.
@@ -37,7 +41,7 @@ verifier:
 
 device-build: hwinfo verifier
 
-go-build: issuer device-build
+go-build: issuer licensedb device-build
 
 deps:
 	$(GO) mod download

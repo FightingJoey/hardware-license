@@ -5,6 +5,8 @@
 | 组件 | 部署位置 | 携带密钥 | 用途 |
 |------|----------|----------|------|
 | `issuer`（Go CLI） | **仅内网签发主机** | `private.pem` | 根据客户的 `hardware.json` 生成 `license.json` |
+| `licensedb`（Go CLI） | **仅内网签发主机** | 无 | 将已签发的 License 元数据写入远端 MySQL |
+| `issue-and-store.sh` | **仅内网签发主机** | 无 | 封装 `issuer sign` + `licensedb store` 的一键签发入库脚本 |
 | `hwinfo`（Go CLI） | 被授权设备 | 无 | 读取 `/sys`/`/proc`，输出 `hardware.json` 供签发 |
 | `verifier`（Go CLI） | 被授权设备 | `public.pem` | 运维/调试用 CLI，与 Node 库走同一套验证逻辑 |
 | `@yourorg/license-verifier`（Node 库） | 被授权设备，**嵌入 Next.js 进程** | `public.pem` | 应用启动时及每小时执行的**权威**进程内校验 |
@@ -33,6 +35,7 @@ make test         # 6 项跨语言测试（Go 签发 → Node 验证）
 | 文件 | 目标平台 | 说明 |
 |------|----------|------|
 | `build/issuer` | 宿主机原生 | 签发主机使用（macOS / Linux / Windows 均可） |
+| `build/licensedb` | 宿主机原生 | 签发后将 License 记录写入远端 MySQL |
 | `build/hwinfo` | **linux/arm64**（默认） | 部署到 GB10 设备 |
 | `build/verifier` | **linux/arm64**（默认） | 部署到 GB10 设备 |
 | `verifier-node/dist/` | Node.js（跨平台） | Next.js 引用的编译后 CommonJS |
@@ -101,6 +104,33 @@ sudo ./build/hwinfo \
 ```
 
 `-not-after` 为必填项。`-max-offline-days 0`（默认）表示不启用离线时长限制；设为大于 0 的值时，设备必须在指定天数内完成一次有效验证，否则即使 `notAfter` 尚未到期，水位机制也会判定 License 失效。详见 [docs/max-offline-days.md](docs/max-offline-days.md)。
+
+#### 签发并写入远端 MySQL（可选）
+
+若需在内网签发后自动登记 License 台账，可使用 `scripts/issue-and-store.sh`。该脚本参数与 `issuer sign` 相同，签名成功后会调用 `build/licensedb` 将记录写入远端 MySQL，并把完整 `hardware.json` 存入 `hardware_remark` 字段作为备注。数据库或表不存在时会自动创建。
+
+```bash
+make issuer licensedb
+
+export DB_HOST=10.191.147.1   # 远端 MySQL 地址
+export DB_PORT=3306           # 默认 3306
+export DB_USER=root
+export DB_PASS='your-password'
+export DB_NAME=hardware_license   # 可选，默认 hardware_license
+
+./scripts/issue-and-store.sh \
+  -hardware ./hardware.json \
+  -priv ./private.pem \
+  -licensee "ACME Corp" \
+  -not-after 2027-05-21 \
+  -features pro,ai-camera \
+  -max-offline-days 90 \
+  -out license.json
+```
+
+`licensedb` 使用 Go MySQL 驱动连接数据库，兼容远端仍使用 `mysql_native_password` 认证的服务器（Homebrew MySQL 9 CLI 已移除该插件，因此不再依赖 `mysql` 命令行客户端）。
+
+写入表 `licenses` 的主要字段：`license_id`、`licensee`、有效期、`hardware_fingerprint`、`features`、`max_offline_days`、`note`、`hardware_remark`（完整 hardware.json）、`license_json`（完整 license.json）。同一 `license_id` 重复签发会更新已有记录。
 
 ### 4. 部署到设备
 
@@ -205,7 +235,10 @@ hardware-license/
 ├── cmd/
 │   ├── hwinfo/     # 设备端硬件采集（无密钥）
 │   ├── issuer/     # 内网签发（含 private.pem）
+│   ├── licensedb/  # 签发台账写入远端 MySQL
 │   └── verifier/   # 设备端验证 CLI（运维/调试）
+├── scripts/
+│   └── issue-and-store.sh   # issuer sign + licensedb store
 ├── internal/
 │   └── license/    # Go 核心库（issuer 与 verifier 共用）
 ├── verifier-node/  # TypeScript 实现，供 Next.js 使用
