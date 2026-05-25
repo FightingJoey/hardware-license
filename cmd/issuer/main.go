@@ -11,6 +11,8 @@
 //	issuer keygen   -priv private.pem -pub public.pem
 //	issuer sign     -hardware hardware.json -priv private.pem \
 //	                -licensee "ACME Corp" -not-after 2027-05-21 -out license.json
+//	issuer sign     -hardware hardware.json -priv private.pem \
+//	                -licensee "ACME Corp" -permanent -out license.json
 //	issuer sign     -local -priv private.pem \
 //	                -licensee "ACME Corp" -not-after 2027-05-21 \
 //	                -nic enP7s7 -disk-name nvme0n1 -require-gpu \
@@ -101,9 +103,10 @@ func cmdSign(argv []string) {
 	out := fs.String("out", "license.json", "output license file")
 	licensee := fs.String("licensee", "", "human-readable customer/licensee name (required)")
 	notBefore := fs.String("not-before", "", "RFC3339 or YYYY-MM-DD; defaults to now (UTC)")
-	notAfter := fs.String("not-after", "", "RFC3339 or YYYY-MM-DD; REQUIRED")
+	notAfter := fs.String("not-after", "", "RFC3339 or YYYY-MM-DD; required unless -permanent")
+	permanent := fs.Bool("permanent", false, "issue a license that never expires (mutually exclusive with -not-after / -max-offline-days)")
 	features := fs.String("features", "", "comma-separated feature flags")
-	maxOffline := fs.Int("max-offline-days", 0, "0 = unlimited; >0 = device must re-verify against fresh wall-clock within N days of LastSeenAt")
+	maxOffline := fs.Int("max-offline-days", 0, "0 = unlimited; >0 = device must re-verify against fresh wall-clock within N days of LastSeenAt (forced to 0 with -permanent)")
 	note := fs.String("note", "", "free-form note stored inside the encrypted payload")
 	force := fs.Bool("force", false, "overwrite existing license file")
 
@@ -123,8 +126,15 @@ func cmdSign(argv []string) {
 	if *licensee == "" {
 		fail("sign: -licensee is required")
 	}
-	if *notAfter == "" {
-		fail("sign: -not-after is required")
+	if *permanent {
+		if *notAfter != "" {
+			fail("sign: -permanent and -not-after are mutually exclusive")
+		}
+		if *maxOffline != 0 {
+			fail("sign: -permanent forces -max-offline-days=0; remove the flag")
+		}
+	} else if *notAfter == "" {
+		fail("sign: -not-after is required (or pass -permanent)")
 	}
 	if !*force {
 		if _, err := os.Stat(*out); err == nil {
@@ -177,15 +187,18 @@ func cmdSign(argv []string) {
 	if err != nil {
 		fail("sign: -not-before: %v", err)
 	}
-	naTime, err := parseDateOrTime(*notAfter, time.Time{})
-	if err != nil {
-		fail("sign: -not-after: %v", err)
-	}
-	if naTime.IsZero() {
-		fail("sign: -not-after must be set")
-	}
-	if isBareDate(*notAfter) {
-		naTime = endOfDayUTC(naTime)
+	var naTime time.Time
+	if !*permanent {
+		naTime, err = parseDateOrTime(*notAfter, time.Time{})
+		if err != nil {
+			fail("sign: -not-after: %v", err)
+		}
+		if naTime.IsZero() {
+			fail("sign: -not-after must be set")
+		}
+		if isBareDate(*notAfter) {
+			naTime = endOfDayUTC(naTime)
+		}
 	}
 
 	feats := []string{}
@@ -203,6 +216,7 @@ func cmdSign(argv []string) {
 		Licensee:       *licensee,
 		NotBefore:      nbTime,
 		NotAfter:       naTime,
+		Permanent:      *permanent,
 		Features:       feats,
 		MaxOfflineDays: *maxOffline,
 		Note:           *note,
@@ -215,8 +229,12 @@ func cmdSign(argv []string) {
 	if err := license.WriteJSONFileAtomic(*out, lic, 0o644); err != nil {
 		fail("sign: write license: %v", err)
 	}
+	naDisplay := "<permanent>"
+	if lic.Expires {
+		naDisplay = lic.NotAfter.Format(time.RFC3339)
+	}
 	fmt.Printf("license written:\n  path:     %s\n  id:       %s\n  not-after: %s\n  features: %v\n",
-		*out, lic.ID, lic.NotAfter.Format(time.RFC3339), feats)
+		*out, lic.ID, naDisplay, feats)
 	if *local {
 		fmt.Printf("  fingerprint: %s\n", hw.Fingerprint)
 		if *hwOut != "" && *hwOut != "-" {
@@ -245,6 +263,7 @@ func cmdInspect(argv []string) {
 		"issuedAt":            lic.IssuedAt,
 		"notBefore":           lic.NotBefore,
 		"notAfter":            lic.NotAfter,
+		"expires":             lic.Expires,
 		"licensee":            lic.Licensee,
 		"hardwareFingerprint": lic.HardwareFingerprint,
 	}

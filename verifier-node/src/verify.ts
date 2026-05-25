@@ -84,8 +84,13 @@ export function verifyLicense(opts: VerifyOptions): VerifyResult {
   if (lic.version !== FORMAT_VERSION) {
     return emit('unsupported_version', new Error(`got ${lic.version}, want ${FORMAT_VERSION}`), lic.id);
   }
-  if (!lic.id || !lic.hardwareFingerprint || !lic.notAfter || !lic.issuedAt) {
+  if (!lic.id || !lic.hardwareFingerprint || !lic.issuedAt) {
     return emit('malformed', new Error('missing required field'), lic.id);
+  }
+  // Permanent licenses carry the Go zero time ("0001-01-01T00:00:00Z");
+  // only require a real notAfter for time-bound ones.
+  if (lic.expires && !lic.notAfter) {
+    return emit('malformed', new Error('expiring license missing notAfter'), lic.id);
   }
 
   // 2. Signature check.
@@ -131,6 +136,11 @@ export function verifyLicense(opts: VerifyOptions): VerifyResult {
       new Error(`payload.id=${payload.id} != license.id=${lic.id}`),
       lic.id, info.fingerprint);
   }
+  if (payload.expires !== lic.expires) {
+    return emit('payload_mismatch',
+      new Error(`payload.expires=${payload.expires} != license.expires=${lic.expires}`),
+      lic.id, info.fingerprint);
+  }
   if (payload.notAfter !== lic.notAfter) {
     return emit('payload_mismatch',
       new Error('payload.notAfter != license.notAfter'),
@@ -166,20 +176,25 @@ export function verifyLicense(opts: VerifyOptions): VerifyResult {
       lic.id, info.fingerprint, adv.effective);
   }
 
-  // 7. Time gates against the effective clock.
+  // 7. Time gates against the effective clock. NotBefore is enforced
+  //    even for permanent licenses; the expired check only runs when
+  //    lic.expires is true.
   const notBefore = new Date(lic.notBefore);
-  const notAfter = new Date(lic.notAfter);
   if (adv.effective.getTime() < notBefore.getTime()) {
     safeSave(opts.watermarkPath, hmacKey, adv.next);
     return emit('not_yet_valid', undefined, lic.id, info.fingerprint, adv.effective);
   }
-  if (adv.effective.getTime() > notAfter.getTime()) {
+  const notAfter = lic.expires ? new Date(lic.notAfter) : null;
+  if (notAfter && adv.effective.getTime() > notAfter.getTime()) {
     safeSave(opts.watermarkPath, hmacKey, adv.next);
     return emit('expired', undefined, lic.id, info.fingerprint, adv.effective);
   }
 
-  // 8. Offline-duration cap, against real wall clock.
-  if (payload.maxOfflineDays > 0 && wm) {
+  // 8. Offline-duration cap, against real wall clock. Skipped for
+  //    permanent licenses (the issuer forces maxOfflineDays=0 in that
+  //    mode, but we guard explicitly in case a hand-crafted payload
+  //    slips through).
+  if (lic.expires && payload.maxOfflineDays > 0 && wm) {
     const gapMs = now.getTime() - new Date(wm.lastSeenAt).getTime();
     const gapDays = gapMs / 86_400_000;
     if (gapDays > payload.maxOfflineDays) {
@@ -197,16 +212,18 @@ export function verifyLicense(opts: VerifyOptions): VerifyResult {
     return emit('watermark_tampered', e as Error, lic.id, info.fingerprint, adv.effective);
   }
 
-  const daysLeft = Math.floor((notAfter.getTime() - adv.effective.getTime()) / 86_400_000);
   logger({ reason: 'ok', licenseId: lic.id, fingerprint: info.fingerprint, now, effective: adv.effective });
-  return {
+  const result: VerifyResult = {
     valid: true,
     reason: 'ok',
     licenseId: lic.id,
-    notAfter: lic.notAfter,
-    daysLeft,
     features: payload.features,
   };
+  if (notAfter) {
+    result.notAfter = lic.notAfter;
+    result.daysLeft = Math.floor((notAfter.getTime() - adv.effective.getTime()) / 86_400_000);
+  }
+  return result;
 }
 
 function safeSave(filePath: string, key: Buffer, wm: import('./types').Watermark): void {

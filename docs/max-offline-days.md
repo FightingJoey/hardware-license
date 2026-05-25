@@ -14,6 +14,8 @@
 
 超过这个间隔，即使 `notAfter`（绝对到期日）还没到，验证也会失败，返回 `offline_too_long`。
 
+> **永久授权（`-permanent` / v4 `expires=false`）不适用此参数**：`issuer sign` 强制要求永久授权下 `-max-offline-days=0`，验证器也会跳过第 9 步检查。永久授权只通过硬件指纹和 watermark 完整性保护，不再有「定期回到内网续期」的硬约束。
+
 ---
 
 ## 与 `-not-after` 的区别

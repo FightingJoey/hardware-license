@@ -1,7 +1,10 @@
 // Shared shapes between the Go and Node verifiers. Any field name or
 // semantic change here MUST be mirrored in internal/license/types.go.
 
-export const FORMAT_VERSION = 3;
+export const FORMAT_VERSION = 4;
+// HKDF info strings keep their v3 names on purpose — the derivation
+// itself did not change, only the surrounding license schema did. Both
+// Go and Node MUST use the exact same constants.
 export const HKDF_INFO_PAYLOAD = 'license-v3:payload-aes-gcm';
 export const HKDF_INFO_WATERMARK = 'license-v3:watermark-hmac';
 
@@ -22,7 +25,10 @@ export interface License {
   /** RFC 3339 UTC timestamps as strings on the wire. */
   issuedAt: string;
   notBefore: string;
+  /** "0001-01-01T00:00:00Z" (Go zero time) when expires=false. */
   notAfter: string;
+  /** false = permanent license; expired / offline_too_long checks skipped. */
+  expires: boolean;
   licensee: string;
   hardwareFingerprint: string;
   encryptedPayload: EncryptedPayload;
@@ -32,8 +38,12 @@ export interface License {
 
 export interface Payload {
   id: string;
+  /** Must equal License.expires (cross-bound to defeat header swaps). */
+  expires: boolean;
+  /** Must equal License.notAfter (zero time when expires=false). */
   notAfter: string;
   features: string[];
+  /** Always 0 for permanent licenses; the issuer enforces this. */
   maxOfflineDays: number;
   note?: string;
 }

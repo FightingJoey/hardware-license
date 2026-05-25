@@ -11,7 +11,7 @@
 | `verifier`（Go CLI） | 被授权设备 | `public.pem` | 运维/调试用 CLI，与 Node 库走同一套验证逻辑 |
 | `@yourorg/license-verifier`（Node 库） | 被授权设备，**嵌入 Next.js 进程** | `public.pem` | 应用启动时及每小时执行的**权威**进程内校验 |
 
-**格式：v3** — Ed25519 签名、AES-256-GCM 加密载荷、HKDF-SHA256 密钥派生、多源宿主机指纹、HMAC 保护的单调时钟水位文件。Canonical JSON（RFC 8785）保证 Go 与 Node 字节级兼容。
+**格式：v4** — Ed25519 签名、AES-256-GCM 加密载荷、HKDF-SHA256 密钥派生、多源宿主机指纹、HMAC 保护的单调时钟水位文件。Canonical JSON（RFC 8785）保证 Go 与 Node 字节级兼容。v4 在 v3 基础上新增 `expires` 字段：`expires=true` 走时间授权（必须设 `notAfter`），`expires=false` 是永久授权——不再判断 `expired`/`offline_too_long`，但**硬件指纹、签名、watermark、时间回拨**等保护**全部保留**。
 
 ---
 
@@ -98,6 +98,7 @@ sudo ./build/hwinfo \
 在内网主机上（读取设备传来的 `hardware.json`）：
 
 ```bash
+# 时间授权
 ./build/issuer sign \
   -hardware ./hardware.json \
   -priv ./private.pem \
@@ -106,7 +107,18 @@ sudo ./build/hwinfo \
   -features pro,ai-camera \
   -max-offline-days 90 \
   -out license.json
+
+# 永久授权（无过期 / 无离线时长限制；指纹和签名仍然强校验）
+./build/issuer sign \
+  -hardware ./hardware.json \
+  -priv ./private.pem \
+  -licensee "ACME Corp" \
+  -permanent \
+  -features pro,ai-camera \
+  -out license.json
 ```
+
+> `-permanent` 与 `-not-after`、`-max-offline-days>0` 互斥。永久授权时 `license.json` 中 `expires=false`，`notAfter` 是 Go 零时间 `0001-01-01T00:00:00Z`（仅作占位，验证逻辑会跳过）。
 
 #### 在被授权设备上本地签发（`-local`）
 
@@ -134,7 +146,7 @@ sudo ./build/issuer-device sign -local \
 
 > **安全提示**：设备端签发意味着 `private.pem` 会出现在被授权设备上，仅在可控运维场景使用。常规部署仍推荐私钥只保留在内网主机。
 
-`-not-after` 为必填项。`-max-offline-days 0`（默认）表示不启用离线时长限制；设为大于 0 的值时，设备必须在指定天数内完成一次有效验证，否则即使 `notAfter` 尚未到期，水位机制也会判定 License 失效。详见 [docs/max-offline-days.md](docs/max-offline-days.md)。
+`-not-after` 与 `-permanent` 二选一：传 `-permanent` 时该 License 永不过期，且 `-max-offline-days` 必须为 0；传 `-not-after` 时按时间授权处理，`-max-offline-days 0`（默认）表示不启用离线时长限制，设为大于 0 的值时设备必须在指定天数内完成一次有效验证，否则即使 `notAfter` 尚未到期、水位机制也会判定 License 失效。详见 [docs/max-offline-days.md](docs/max-offline-days.md)。
 
 #### 签发并写入远端 MySQL（可选）
 
@@ -236,20 +248,21 @@ sudo ./build/verifier -v \
 | `private.pem` | `issuer keygen` | `issuer sign` | 永久（信任根） |
 | `public.pem` | `issuer keygen` | `verifier`、Next.js 验证库 | 永久 |
 | `hardware.json` | `hwinfo`（设备端） | `issuer sign` | 每台设备一份，硬件变更后需重新采集 |
-| `license.json` | `issuer sign` | `verifier`、Next.js 验证库 | 至 `notAfter` 到期 |
+| `license.json` | `issuer sign` | `verifier`、Next.js 验证库 | 时间授权：至 `notAfter` 到期；永久授权：永不过期（指纹一致时） |
 | `.watermark` | 验证器（首次验证成功后） | 验证器（每次验证） | 每次验证后原子更新 |
 
 ---
 
-## License 格式（v3）
+## License 格式（v4）
 
 ```jsonc
 {
-  "version": 3,
+  "version": 4,
   "id": "lic_<hex>",
   "issuedAt":  "2026-05-21T08:00:00Z",
   "notBefore": "2026-05-21T08:00:00Z",
-  "notAfter":  "2027-05-21T23:59:59Z",
+  "notAfter":  "2027-05-21T23:59:59Z",   // 永久授权时为 "0001-01-01T00:00:00Z"
+  "expires":   true,                      // false = 永久授权
   "licensee": "ACME Corp",
   "hardwareFingerprint": "<sources 的 sha256 十六进制>",
   "encryptedPayload": {
@@ -261,10 +274,10 @@ sudo ./build/verifier -v \
 }
 ```
 
-明文载荷（加密前）会重复 `id` 和 `notAfter`，防止攻击者将其他 License 的密文拼接到当前头部：
+明文载荷（加密前）会重复 `id`、`expires` 和 `notAfter`，防止攻击者把其他 License 的密文拼接到当前头部，特别是阻止把「永久授权 payload」嫁接到「时间授权 header」上（或反过来）：
 
 ```jsonc
-{ "id": "...", "notAfter": "...", "features": [...], "maxOfflineDays": 90 }
+{ "id": "...", "expires": true, "notAfter": "...", "features": [...], "maxOfflineDays": 90 }
 ```
 
 ---
@@ -273,18 +286,20 @@ sudo ./build/verifier -v \
 
 按顺序执行：
 
-1. 结构版本必须为 `3`
+1. 结构版本必须为 `4`
 2. 对 canonical 后的 License 正文做 Ed25519 签名校验
 3. 本地硬件指纹与 License 中的 `hardwareFingerprint` 一致
 4. AES-256-GCM 载荷解密成功（内置认证标签）
-5. 载荷内的 `id` / `notAfter` 与外层头部一致
+5. 载荷内的 `id` / `expires` / `notAfter` 与外层头部一致
 6. 水位文件（若存在）HMAC 校验通过，且属于当前 License
 7. 历史累计时间回拨次数 ≤ 3
-8. `effectiveNow`（= `max(当前时间, watermark.lastSeenAt)`）落在 `[notBefore, notAfter]` 内
-9. 自 `lastSeenAt` 起的真实墙钟间隔 ≤ `maxOfflineDays`（若已设置）
+8. `effectiveNow`（= `max(当前时间, watermark.lastSeenAt)`）≥ `notBefore`；若 `expires=true` 还需 ≤ `notAfter`（永久授权跳过 `notAfter` 检查）
+9. 若 `expires=true` 且 `maxOfflineDays>0`：自 `lastSeenAt` 起的真实墙钟间隔 ≤ `maxOfflineDays`（永久授权恒跳过此检查）
 10. 更新水位文件并写入新的 HMAC
 
 任一步失败均返回稳定的机器可读 `reason` 码；详细错误仅写入日志，不对外暴露。
+
+> 永久授权（`expires=false`）跳过的**只是**第 8 步的 `notAfter` 边界和第 9 步的离线时长限制。第 1–7 步以及第 8 步的 `notBefore`、第 10 步的水位推进**全部仍然执行**，所以即便是永久授权：换硬件、换设备、回拨时间、伪造水位、tamper 签名都会被立即拒绝。
 
 **常见 `reason` 值：**
 

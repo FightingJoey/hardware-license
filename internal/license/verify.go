@@ -65,8 +65,14 @@ func Verify(opts VerifyOptions) VerifyResult {
 		return emit(ReasonUnsupportedVersion,
 			fmt.Errorf("got version %d, want %d", lic.Version, FormatVersion), lic.ID, "", time.Time{})
 	}
-	if lic.ID == "" || lic.HardwareFingerprint == "" || lic.NotAfter.IsZero() || lic.IssuedAt.IsZero() {
+	if lic.ID == "" || lic.HardwareFingerprint == "" || lic.IssuedAt.IsZero() {
 		return emit(ReasonMalformed, errors.New("missing required field"), lic.ID, "", time.Time{})
+	}
+	// For time-bound licenses NotAfter must be set. Permanent licenses
+	// (Expires=false) carry the Go zero time intentionally and skip the
+	// expired / offline_too_long checks further below.
+	if lic.Expires && lic.NotAfter.IsZero() {
+		return emit(ReasonMalformed, errors.New("expiring license missing notAfter"), lic.ID, "", time.Time{})
 	}
 
 	// 2. Signature check first — it's the cheapest hard gate.
@@ -115,6 +121,11 @@ func Verify(opts VerifyOptions) VerifyResult {
 			fmt.Errorf("payload.id %s != license.id %s", payload.ID, lic.ID),
 			lic.ID, info.Fingerprint, time.Time{})
 	}
+	if payload.Expires != lic.Expires {
+		return emit(ReasonPayloadMismatch,
+			fmt.Errorf("payload.expires=%v != license.expires=%v", payload.Expires, lic.Expires),
+			lic.ID, info.Fingerprint, time.Time{})
+	}
 	if !payload.NotAfter.Equal(lic.NotAfter) {
 		return emit(ReasonPayloadMismatch,
 			fmt.Errorf("payload.notAfter != license.notAfter"),
@@ -149,12 +160,15 @@ func Verify(opts VerifyOptions) VerifyResult {
 			lic.ID, info.Fingerprint, effective)
 	}
 
-	// 7. Time gates against the *effective* clock.
+	// 7. Time gates against the *effective* clock. NotBefore is enforced
+	//    even for permanent licenses (operators may pre-stage a license
+	//    that should not take effect until a future date). The expired
+	//    check only runs for time-bound licenses.
 	if effective.Before(lic.NotBefore) {
 		_ = SaveWatermark(opts.WatermarkPath, hmacKey, next)
 		return emit(ReasonNotYetValid, nil, lic.ID, info.Fingerprint, effective)
 	}
-	if effective.After(lic.NotAfter) {
+	if lic.Expires && effective.After(lic.NotAfter) {
 		_ = SaveWatermark(opts.WatermarkPath, hmacKey, next)
 		return emit(ReasonExpired, nil, lic.ID, info.Fingerprint, effective)
 	}
@@ -162,7 +176,9 @@ func Verify(opts VerifyOptions) VerifyResult {
 	// 8. Offline-duration cap (compares against the *real* wall clock,
 	//    not the effective clock — we only want to know "how long since
 	//    we last saw a fresh license"; that requires real-time deltas).
-	if payload.MaxOfflineDays > 0 && wm != nil {
+	//    Permanent licenses never hit this gate because Issue() refuses
+	//    to set MaxOfflineDays > 0 in that mode.
+	if lic.Expires && payload.MaxOfflineDays > 0 && wm != nil {
 		gap := now.Sub(wm.LastSeenAt)
 		if gap.Hours()/24 > float64(payload.MaxOfflineDays) {
 			_ = SaveWatermark(opts.WatermarkPath, hmacKey, next)
@@ -178,17 +194,20 @@ func Verify(opts VerifyOptions) VerifyResult {
 			lic.ID, info.Fingerprint, effective)
 	}
 
-	days := int(lic.NotAfter.Sub(effective).Hours() / 24)
-	notAfter := lic.NotAfter
-	if log != nil {
-		log(VerifyEvent{Reason: ReasonOK, LicenseID: lic.ID, Fingerprint: info.Fingerprint, Now: now, Effective: effective})
-	}
-	return VerifyResult{
+	res := VerifyResult{
 		Valid:     true,
 		Reason:    ReasonOK,
-		NotAfter:  &notAfter,
-		DaysLeft:  &days,
 		LicenseID: lic.ID,
 		Features:  payload.Features,
 	}
+	if lic.Expires {
+		days := int(lic.NotAfter.Sub(effective).Hours() / 24)
+		notAfter := lic.NotAfter
+		res.NotAfter = &notAfter
+		res.DaysLeft = &days
+	}
+	if log != nil {
+		log(VerifyEvent{Reason: ReasonOK, LicenseID: lic.ID, Fingerprint: info.Fingerprint, Now: now, Effective: effective})
+	}
+	return res
 }

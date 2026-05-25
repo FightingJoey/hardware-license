@@ -103,13 +103,14 @@ func main() {
 		_ = enc.Encode(res)
 	} else {
 		if res.Valid {
-			daysLeft := -1
-			if res.DaysLeft != nil {
-				daysLeft = *res.DaysLeft
-			}
-			fmt.Printf("license: VALID\n  id:        %s\n  daysLeft:  %d\n", res.LicenseID, daysLeft)
+			fmt.Printf("license: VALID\n  id:        %s\n", res.LicenseID)
 			if res.NotAfter != nil {
 				fmt.Printf("  notAfter:  %s\n", res.NotAfter.Format(time.RFC3339))
+				if res.DaysLeft != nil {
+					fmt.Printf("  daysLeft:  %d\n", *res.DaysLeft)
+				}
+			} else {
+				fmt.Printf("  notAfter:  <permanent>\n  daysLeft:  ∞\n")
 			}
 			if len(res.Features) > 0 {
 				fmt.Printf("  features:  %v\n", res.Features)

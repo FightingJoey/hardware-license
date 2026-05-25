@@ -93,11 +93,15 @@ function issueLicense(tmp, sources, opts = {}) {
     '-hardware', hwPath,
     '-priv', privPath,
     '-licensee', 'TEST',
-    '-not-after', opts.notAfter || new Date(Date.now() + 86_400_000).toISOString(),
     '-features', opts.features || 'pro,ai',
     '-out', licPath,
   ];
-  if (opts.maxOfflineDays) args.push('-max-offline-days', String(opts.maxOfflineDays));
+  if (opts.permanent) {
+    args.push('-permanent');
+  } else {
+    args.push('-not-after', opts.notAfter || new Date(Date.now() + 86_400_000).toISOString());
+    if (opts.maxOfflineDays) args.push('-max-offline-days', String(opts.maxOfflineDays));
+  }
   sh(ISSUER_BIN, args);
   return { licPath, pubPath, privPath };
 }
@@ -240,6 +244,83 @@ test('signature tamper is detected', () => {
     });
     assert.equal(r.valid, false);
     assert.equal(r.reason, 'signature_invalid');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('permanent license: verifies, no notAfter/daysLeft', () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'lic-'));
+  try {
+    const env = setup(tmp);
+    const { licPath, pubPath } = issueLicense(tmp, env.sources, { permanent: true });
+    const watermarkPath = path.join(tmp, '.watermark');
+
+    const r = verifyLicense({
+      licensePath: licPath, publicKeyPath: pubPath, watermarkPath,
+      fingerprint: env.fpCfg,
+    });
+    assert.equal(r.valid, true, `got ${r.reason}`);
+    assert.equal(r.notAfter, undefined, 'permanent license must not advertise notAfter');
+    assert.equal(r.daysLeft, undefined, 'permanent license must not advertise daysLeft');
+    assert.deepEqual(r.features, ['pro', 'ai']);
+
+    // Disk format sanity: license.json must explicitly say expires:false
+    // so old verifiers immediately reject it (they refuse v4 anyway, but
+    // belt-and-braces).
+    const fs = require('node:fs');
+    const lic = JSON.parse(fs.readFileSync(licPath, 'utf8'));
+    assert.equal(lic.version, 4);
+    assert.equal(lic.expires, false);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('permanent license: years in the future still verifies', () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'lic-'));
+  try {
+    const env = setup(tmp);
+    const { licPath, pubPath } = issueLicense(tmp, env.sources, { permanent: true });
+    const watermarkPath = path.join(tmp, '.watermark');
+
+    // Warm up the watermark first so the second call has a baseline.
+    let r = verifyLicense({
+      licensePath: licPath, publicKeyPath: pubPath, watermarkPath,
+      fingerprint: env.fpCfg,
+    });
+    assert.equal(r.valid, true);
+
+    // Simulate the wall clock 20 years from now — a time-bound license
+    // would have failed long ago, a permanent one keeps verifying.
+    const farFuture = new Date(Date.now() + 20 * 365 * 86_400_000);
+    r = verifyLicense({
+      licensePath: licPath, publicKeyPath: pubPath, watermarkPath,
+      now: farFuture, fingerprint: env.fpCfg,
+    });
+    assert.equal(r.valid, true, `got ${r.reason}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('permanent license: fingerprint mismatch still rejected', () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'lic-'));
+  try {
+    const env = setup(tmp);
+    const { licPath, pubPath } = issueLicense(tmp, env.sources, { permanent: true });
+    const watermarkPath = path.join(tmp, '.watermark');
+
+    // Swap MAC after issuance — fingerprint moves, license must reject
+    // even though it has no expiry.
+    writeFileSync(path.join(env.hostDir, 'net', 'eth0', 'address'), '11:22:33:44:55:66\n');
+
+    const r = verifyLicense({
+      licensePath: licPath, publicKeyPath: pubPath, watermarkPath,
+      fingerprint: env.fpCfg,
+    });
+    assert.equal(r.valid, false);
+    assert.equal(r.reason, 'fingerprint_mismatch');
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

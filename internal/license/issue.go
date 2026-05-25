@@ -11,10 +11,15 @@ import (
 // IssueOptions are the inputs the issuer receives from the operator
 // (CLI flags) plus the customer-supplied HardwareInfo.
 type IssueOptions struct {
-	Hardware       *HardwareInfo
-	Licensee       string
-	NotBefore      time.Time     // optional; defaults to now
-	NotAfter       time.Time     // REQUIRED
+	Hardware  *HardwareInfo
+	Licensee  string
+	NotBefore time.Time // optional; defaults to now
+	// NotAfter is required when Permanent=false; ignored otherwise.
+	NotAfter time.Time
+	// Permanent issues a license that never expires. NotAfter is forced
+	// to the zero time and MaxOfflineDays is forced to 0. Hardware
+	// fingerprint, signature and watermark protections still apply.
+	Permanent      bool
 	Features       []string
 	MaxOfflineDays int
 	Note           string
@@ -43,11 +48,20 @@ func Issue(opts IssueOptions) (*License, error) {
 	if recomputed != opts.Hardware.Fingerprint {
 		return nil, fmt.Errorf("issue: hardware.json fingerprint mismatch (got %s, recomputed %s)", opts.Hardware.Fingerprint, recomputed)
 	}
-	if opts.NotAfter.IsZero() {
-		return nil, fmt.Errorf("issue: notAfter is required")
-	}
-	if !opts.NotBefore.IsZero() && !opts.NotAfter.After(opts.NotBefore) {
-		return nil, fmt.Errorf("issue: notAfter must be > notBefore")
+	if opts.Permanent {
+		if !opts.NotAfter.IsZero() {
+			return nil, fmt.Errorf("issue: permanent license must not have notAfter")
+		}
+		if opts.MaxOfflineDays != 0 {
+			return nil, fmt.Errorf("issue: permanent license must have maxOfflineDays=0")
+		}
+	} else {
+		if opts.NotAfter.IsZero() {
+			return nil, fmt.Errorf("issue: notAfter is required (or pass Permanent=true)")
+		}
+		if !opts.NotBefore.IsZero() && !opts.NotAfter.After(opts.NotBefore) {
+			return nil, fmt.Errorf("issue: notAfter must be > notBefore")
+		}
 	}
 	if opts.MaxOfflineDays < 0 {
 		return nil, fmt.Errorf("issue: maxOfflineDays must be >= 0")
@@ -61,6 +75,8 @@ func Issue(opts IssueOptions) (*License, error) {
 	if nb.IsZero() {
 		nb = now
 	}
+	// For permanent licenses na is the zero time, which JSON-serialises
+	// to "0001-01-01T00:00:00Z" deterministically on Go and Node.
 	na := opts.NotAfter.UTC()
 
 	id := opts.IDOverride
@@ -88,8 +104,10 @@ func Issue(opts IssueOptions) (*License, error) {
 	if features == nil {
 		features = []string{}
 	}
+	expires := !opts.Permanent
 	payload := &Payload{
 		ID:             id,
+		Expires:        expires,
 		NotAfter:       na,
 		Features:       features,
 		MaxOfflineDays: opts.MaxOfflineDays,
@@ -106,6 +124,7 @@ func Issue(opts IssueOptions) (*License, error) {
 		IssuedAt:            now,
 		NotBefore:           nb,
 		NotAfter:            na,
+		Expires:             expires,
 		Licensee:            opts.Licensee,
 		HardwareFingerprint: opts.Hardware.Fingerprint,
 		EncryptedPayload:    enc,
