@@ -34,7 +34,38 @@ export interface FingerprintConfig {
   requireGpu?: boolean;
 }
 
-export function defaultLinuxConfig(): FingerprintConfig {
+/**
+ * Bare-metal / host-namespace defaults. Use this when the Next.js
+ * process runs directly on the licensed device (e.g. systemd / PM2 +
+ * `npm start` on GB10) and `/sys`, `/proc` are the kernel's real
+ * filesystems rather than container bind-mounts.
+ *
+ * Mirrors {@code internal/license/fingerprint.go::DefaultHostConfig}
+ * byte-for-byte.
+ */
+export function defaultHostConfig(): FingerprintConfig {
+  return {
+    dmiDir: '/sys/class/dmi/id',
+    deviceTreeDir: '/proc/device-tree',
+    firmwareTreeDir: '/sys/firmware/devicetree/base',
+    netDir: '/sys/class/net',
+    nicName: process.env.HW_NIC ?? 'eth0',
+    cmdlinePath: '/proc/cmdline',
+    blockDir: '/sys/class/block',
+    diskName: process.env.HW_DISK ?? '',
+    nvidiaSmi: process.env.HW_NVIDIA_SMI ?? 'nvidia-smi',
+    nvidiaProcDir: process.env.HW_NVIDIA_PROC ?? '/proc/driver/nvidia',
+    requireGpu: false,
+  };
+}
+
+/**
+ * Container defaults — the Next.js process runs inside Docker with
+ * /sys bind-mounted at /host/sys, /proc/cmdline at /host/cmdline,
+ * and /proc/driver/nvidia at /host/nvidia-driver. See the reference
+ * docker-compose.yml at the repo root.
+ */
+export function defaultContainerConfig(): FingerprintConfig {
   return {
     dmiDir: '/host/sys/class/dmi/id',
     deviceTreeDir: '/proc/device-tree',
@@ -48,6 +79,47 @@ export function defaultLinuxConfig(): FingerprintConfig {
     nvidiaProcDir: process.env.HW_NVIDIA_PROC ?? '/host/nvidia-driver',
     requireGpu: false,
   };
+}
+
+/**
+ * Resolve the fingerprint layout the same way the Go CLI does:
+ *
+ *   - if `forceContainer === true` (or env `HW_CONTAINER=1`), use the
+ *     container bind-mount paths (`/host/sys/...`, `/host/cmdline`)
+ *   - otherwise use bare-metal host paths (`/sys/...`, `/proc/cmdline`)
+ *
+ * Callers may overlay extra config on top of the returned object.
+ *
+ * `HW_DMI`, `HW_NET`, `HW_BLOCK`, `HW_CMDLINE`, `HW_DT`, `HW_FW_TREE`
+ * are honoured **only in container mode**, exactly like the Go side.
+ * Applying these on bare metal silently breaks fingerprint parity
+ * with `issuer sign -local`, so we refuse to do it.
+ */
+export function fingerprintConfigFromEnv(forceContainer?: boolean): FingerprintConfig {
+  const useContainer = forceContainer ?? (process.env.HW_CONTAINER === '1');
+  const cfg = useContainer ? defaultContainerConfig() : defaultHostConfig();
+  if (useContainer) {
+    if (process.env.HW_DMI) cfg.dmiDir = process.env.HW_DMI;
+    if (process.env.HW_DT) cfg.deviceTreeDir = process.env.HW_DT;
+    if (process.env.HW_FW_TREE) cfg.firmwareTreeDir = process.env.HW_FW_TREE;
+    if (process.env.HW_NET) cfg.netDir = process.env.HW_NET;
+    if (process.env.HW_CMDLINE) cfg.cmdlinePath = process.env.HW_CMDLINE;
+    if (process.env.HW_BLOCK) cfg.blockDir = process.env.HW_BLOCK;
+  }
+  if (process.env.HW_REQUIRE_GPU !== undefined) {
+    cfg.requireGpu = process.env.HW_REQUIRE_GPU === '1' || process.env.HW_REQUIRE_GPU === 'true';
+  }
+  return cfg;
+}
+
+/**
+ * @deprecated Use {@link fingerprintConfigFromEnv} (env-aware) or one
+ * of {@link defaultHostConfig} / {@link defaultContainerConfig}
+ * (explicit). Kept for backward compatibility — historically this
+ * returned **container** defaults; that behaviour is preserved.
+ */
+export function defaultLinuxConfig(): FingerprintConfig {
+  return defaultContainerConfig();
 }
 
 export function collectSources(cfg: FingerprintConfig): Record<string, string> {

@@ -10,7 +10,10 @@ export type {
 } from './types';
 export {
   type FingerprintConfig,
+  defaultHostConfig,
+  defaultContainerConfig,
   defaultLinuxConfig,
+  fingerprintConfigFromEnv,
   collectHardwareInfo,
   computeFingerprint,
   collectSources,

@@ -89,7 +89,7 @@ sudo ./build/hwinfo \
 
 > 宿主机上跑 `verifier` 时，请勿 export `HW_DMI=/host/sys/...` 等容器路径环境变量（那是 `docker-compose.yml` 给容器用的）。新版 CLI 在 bare-metal 模式下会忽略它们；也可显式加 `-host`。
 
-容器内等价命令见 `docs/hardware-fingerprint.md`。
+容器内等价命令见 [docs/hardware-fingerprint.md](docs/hardware-fingerprint.md)。
 
 输出 JSON 包含所有可用的身份源（DMI 厂商/型号、device-tree、网卡 MAC、root UUID、**NVMe 工厂 serial / WWID**、GPU UUID）及其 SHA-256 指纹。该文件不含任何密钥，可安全通过 U 盘或邮件传输。详见 [docs/hardware-fingerprint.md](docs/hardware-fingerprint.md)。
 
@@ -176,7 +176,43 @@ docker compose up -d app
 ### 5. 运维侧快速校验
 
 ```bash
-docker compose run --rm verifier -v
+docker compose run --rm --entrypoint /app/hwinfo verifier   -nic enP7s7 -disk-name nvme0n1 -require-gpu -out -
+
+Container hw-verifier-run-3c5c2ae22b25 Creating 
+Container hw-verifier-run-3c5c2ae22b25 Created 
+{
+  "schemaVersion": 1,
+  "collectedAt": "2026-05-23T13:21:40.401194348Z",
+  "platform": "linux/arm64",
+  "nic": "enP7s7",
+  "sources": {
+    "board_serial": "02YACJXHS1000009",
+    "disk_serial": "511251124146000891",
+    "disk_wwid": "eui.00000000000000006479a7b4ea30bc37",
+    "dmi_product_name": "FusionXpark GB10",
+    "dmi_sys_vendor": "XFUSION",
+    "gpu_uuid": "GPU-908ad27c-34ec-50d5-9d60-1409c2c5b829",
+    "host_mac": "44:1a:4c:07:52:fb",
+    "product_serial": "2106185969XHRC000450",
+    "product_uuid": "03935dc0-1750-11f1-89bb-032ca9825335",
+    "root_uuid": "UUID:0c86507f-a302-484a-894f-b7f1df3817c0"
+  },
+  "fingerprint": "e7e400b0e68a8d4ba9cbe170e4b0fc046bee7909e96bec2fcb5450037ddea0c4"
+}
+```
+
+```bash
+docker compose run --rm verifier -v   -pub /license/public.pem -license /license/license.json
+
+Container hw-verifier-run-58a6206cb48e Creating 
+Container hw-verifier-run-58a6206cb48e Created 
+[verify] fingerprint paths: dmi=/host/sys/class/dmi/id net=/host/sys/class/net block=/host/sys/class/block cmdline=/host/cmdline fw=/host/sys/firmware/devicetree/base nic=enP7s7 disk=nvme0n1
+[verify] reason=ok license=lic_257811bd7c07b3efb97ba023c706c0fc fp=e7e400b0e68a8d4ba9cbe170e4b0fc046bee7909e96bec2fcb5450037ddea0c4 now=2026-05-23T13:19:22Z eff=2026-05-23T13:19:22Z
+license: VALID
+  id:        lic_257811bd7c07b3efb97ba023c706c0fc
+  daysLeft:  363
+  notAfter:  2027-05-21T23:59:59Z
+  features:  [pro ai-camera]
 ```
 
 或在宿主机直接运行（与 `issuer sign -local` 相同，**需要 sudo** 以读取 DMI 字段；watermark 默认写在 license 同目录的 `.watermark`）：
@@ -315,7 +351,14 @@ hardware-license/
 
 3. Next.js 13.x 需在 `next.config.js` 中启用 `experimental.instrumentationHook`（14+ 默认开启）。
 
-4. 容器需挂载 `/license/` 及宿主机硬件路径，详见 `docker-compose.yml` 和 `examples/nextjs/README.md`。
+4. 选择部署形态：
+
+   - **裸机（GB10 + PM2 + `npm start`，推荐 GB10 离线场景）**：默认读取 `/sys/...`、`/proc/cmdline`，不需要任何 bind-mount 配置。复制 `examples/nextjs/ecosystem.config.js` 与 `examples/nextjs/license-app.service` 到设备上，按真实 `HW_NIC`/`HW_DISK` 改两行即可。详见 [`examples/nextjs/README.md`](examples/nextjs/README.md#4a-bare-metal-deployment-pm2--npm-start-on-gb10)。
+   - **容器**：使用仓库根的 `docker-compose.yml`，已经设置好 `HW_CONTAINER=1` 和 `/host/sys`、`/host/cmdline`、`/host/nvidia-driver` 的 bind-mount。
+
+   验证器会根据 `HW_CONTAINER` 自动选择正确的路径默认值——`HW_CONTAINER=1` 走容器 bind-mount 路径，未设置则走裸机 `/sys`、`/proc` 路径。两种模式下你只需要再覆盖 `HW_NIC`、`HW_DISK`、`HW_REQUIRE_GPU` 等设备级旋钮即可。
+
+> **关键提醒（裸机）**：硬件指纹包含 `/sys/class/dmi/id/{product_uuid,product_serial,board_serial}`，这几个节点在 Linux 上通常是 `0400 root:root`。`issuer sign -local` 是 sudo 跑的，因此 Next.js 进程也必须以 root 运行（`license-app.service` 中 `User=root`），否则会读不到 DMI 字段、指纹变短、报 `fingerprint_mismatch`。如确实无法 root，需要在签发时也以同一个非 root 用户跑 `issuer sign -local`，让两端都不带 DMI 字段——见 `examples/nextjs/README.md` 的 "Running unprivileged" 段。
 
 ---
 

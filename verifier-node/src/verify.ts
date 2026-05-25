@@ -26,7 +26,7 @@ import {
 import {
   FingerprintConfig,
   collectHardwareInfo,
-  defaultLinuxConfig,
+  fingerprintConfigFromEnv,
 } from './fingerprint';
 import {
   advanceWatermark,
@@ -59,7 +59,10 @@ export interface VerifyEvent {
 export function verifyLicense(opts: VerifyOptions): VerifyResult {
   const now = opts.now ?? new Date();
   const logger = opts.logger ?? (() => {});
-  const cfg: FingerprintConfig = { ...defaultLinuxConfig(), ...(opts.fingerprint ?? {}) };
+  // Bare-metal host paths by default; switch to container bind-mount
+  // paths only when HW_CONTAINER=1 (mirrors the Go CLI). Caller-provided
+  // `fingerprint` overrides win regardless.
+  const cfg: FingerprintConfig = { ...fingerprintConfigFromEnv(), ...(opts.fingerprint ?? {}) };
 
   const emit = (reason: VerifyReason, error?: Error, licenseId?: string, fingerprint?: string, effective?: Date): VerifyResult => {
     logger({ reason, error, licenseId, fingerprint, now, effective });

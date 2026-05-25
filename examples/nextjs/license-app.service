@@ -1,0 +1,41 @@
+; systemd unit that owns the PM2 process tree for a licensed Next.js
+; app on GB10 bare metal. Install at /etc/systemd/system/license-app.service
+; and enable with:
+;
+;   sudo systemctl daemon-reload
+;   sudo systemctl enable --now license-app
+;
+; This deliberately runs PM2 (and therefore Node) as root because the
+; hardware fingerprint reads /sys/class/dmi/id/{product_uuid,product_serial,
+; board_serial}, which are mode 0400 root-only on most Linux distros.
+; If you have already produced a license that *omits* those DMI fields
+; (e.g. you signed without sudo), you can run as a normal user — see
+; examples/nextjs/README.md → "Running unprivileged".
+
+[Unit]
+Description=Licensed Next.js app via PM2 (GB10)
+Documentation=https://pm2.keymetrics.io/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=root
+Group=root
+WorkingDirectory=/opt/your-app
+Environment=PM2_HOME=/root/.pm2
+; Adjust the absolute path of pm2 to wherever `which pm2` returns on
+; the device. Using `npm i -g pm2` on Ubuntu typically yields
+; /usr/lib/node_modules/pm2/bin/pm2 with a wrapper at /usr/bin/pm2.
+ExecStart=/usr/bin/pm2 start /opt/your-app/ecosystem.config.js --env production
+ExecReload=/usr/bin/pm2 reload all
+ExecStop=/usr/bin/pm2 kill
+PIDFile=/root/.pm2/pm2.pid
+Restart=on-failure
+RestartSec=10
+; Don't auto-disable on rapid license-failure restarts — operators may
+; be replacing the license file. Keep coming back.
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target
